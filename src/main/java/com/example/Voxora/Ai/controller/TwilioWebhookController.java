@@ -66,4 +66,96 @@ public class TwilioWebhookController {
 
         return ResponseEntity.ok("Outbound Twilio call started successfully. Call SID: " + call.getSid());
     }
+
+    public static class StartSetuRequest {
+        public String speakerA_Phone;
+        public String speakerB_Phone;
+    }
+
+    @PostMapping(value = "/setu/start", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> startSetuCall(@org.springframework.web.bind.annotation.RequestBody StartSetuRequest request) {
+        Twilio.init(accountSid, authToken);
+
+        String nGrokDomain = "ungushing-tabatha-unprimly.ngrok-free.dev";
+        String twilioNumber = "+12603083509"; // Using your existing from number
+
+        String twimlA = "<Response><Connect><Stream url=\"wss://" + nGrokDomain + "/api/voice/stream/A\" /></Connect></Response>";
+        String twimlB = "<Response><Connect><Stream url=\"wss://" + nGrokDomain + "/api/voice/stream/B\" /></Connect></Response>";
+
+        Call callA = null;
+        Call callB = null;
+
+        try {
+            callA = Call.creator(
+                    new com.twilio.type.PhoneNumber(request.speakerA_Phone),
+                    new com.twilio.type.PhoneNumber(twilioNumber),
+                    new com.twilio.type.Twiml(twimlA))
+                    .create();
+        } catch (Exception e) {
+            System.err.println("Error calling speaker A: " + e.getMessage());
+        }
+
+        try {
+            callB = Call.creator(
+                    new com.twilio.type.PhoneNumber(request.speakerB_Phone),
+                    new com.twilio.type.PhoneNumber(twilioNumber),
+                    new com.twilio.type.Twiml(twimlB))
+                    .create();
+        } catch (Exception e) {
+            System.err.println("Error calling speaker B: " + e.getMessage());
+        }
+
+        return ResponseEntity.ok("Dual outbound calls started.\nCall A SID: " + (callA != null ? callA.getSid() : "FAILED") + "\nCall B SID: " + (callB != null ? callB.getSid() : "FAILED"));
+    }
+
+    @GetMapping(value = "/setu/start-browser")
+    public ResponseEntity<String> startSetuCallBrowser(
+            @RequestParam("speakerA") String speakerA,
+            @RequestParam("speakerB") String speakerB) {
+        Twilio.init(accountSid, authToken);
+
+        String nGrokDomain = "ungushing-tabatha-unprimly.ngrok-free.dev";
+        String twilioNumber = "+12603083509"; // Using your existing from number
+
+        // Ensure numbers have plus sign if they start with 91 but are passed without it via URL encoding
+        if (!speakerA.startsWith("+")) speakerA = "+" + speakerA.trim();
+        if (!speakerB.startsWith("+")) speakerB = "+" + speakerB.trim();
+
+        // Adding a short <Pause> keeps Twilio from hanging up the call while waiting for the stream to establish
+        String twimlA = "<Response><Connect><Stream url=\"wss://" + nGrokDomain + "/api/voice/stream/A\" /></Connect><Pause length=\"86400\"/></Response>";
+        String twimlB = "<Response><Connect><Stream url=\"wss://" + nGrokDomain + "/api/voice/stream/B\" /></Connect><Pause length=\"86400\"/></Response>";
+
+        Call callA = null;
+        Call callB = null;
+        String errorA = "";
+        String errorB = "";
+
+        try {
+            callA = Call.creator(
+                    new com.twilio.type.PhoneNumber(speakerA),
+                    new com.twilio.type.PhoneNumber(twilioNumber),
+                    new com.twilio.type.Twiml(twimlA))
+                    .create();
+        } catch (Exception e) {
+            errorA = e.getMessage();
+            System.err.println("Error calling speaker A: " + e.getMessage());
+        }
+
+        try {
+            callB = Call.creator(
+                    new com.twilio.type.PhoneNumber(speakerB),
+                    new com.twilio.type.PhoneNumber(twilioNumber),
+                    new com.twilio.type.Twiml(twimlB))
+                    .create();
+        } catch (Exception e) {
+            errorB = e.getMessage();
+            System.err.println("Error calling speaker B: " + e.getMessage());
+        }
+
+        String responseMsg = "Dual outbound calls started from Browser.\n" +
+                             "Call A SID: " + (callA != null ? callA.getSid() : "FAILED (" + errorA + ")") + "\n" +
+                             "Call B SID: " + (callB != null ? callB.getSid() : "FAILED (" + errorB + ")");
+
+        return ResponseEntity.ok(responseMsg);
+    }
 }

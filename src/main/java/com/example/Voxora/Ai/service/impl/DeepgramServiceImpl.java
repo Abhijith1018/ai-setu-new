@@ -20,13 +20,19 @@ public class DeepgramServiceImpl implements DeepgramService {
     private final ObjectMapper objectMapper;
 
     public DeepgramServiceImpl(WebClient.Builder webClientBuilder,
-                               @Value("${voxora.api.deepgram.key:dummy}") String apiKey,
+                               @Value("${voxora.api.deepgram.key:}") String apiKey,
                                ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
+        // Deepgram's API requires `Token ` prefix for API keys
+        String authHeaderValue = "Token " + apiKey;
+
+        log.info("Initialized Deepgram with API Key safely loaded from .env (Starts with: {})",
+                apiKey != null && apiKey.length() > 4 ? apiKey.substring(0, 4) + "..." : "INVALID_KEY");
+
         this.webClient = webClientBuilder
                 .baseUrl("https://api.deepgram.com/v1")
-                .defaultHeader("Authorization", "Token " + apiKey)
-                .defaultHeader("Content-Type", "audio/mulaw;rate=8000") // standard Twilio rate
+                .defaultHeader("Authorization", authHeaderValue)
+                .defaultHeader("Content-Type", "audio/mulaw") // Twilio 8khz mulaw stream
                 .build();
     }
 
@@ -35,7 +41,13 @@ public class DeepgramServiceImpl implements DeepgramService {
         log.debug("Sending {} bytes to Deepgram STT", audioBytes.length);
 
         return webClient.post()
-                .uri("/listen?model=nova-2&encoding=mulaw&sample_rate=8000&channels=1")
+                .uri(uriBuilder -> uriBuilder
+                        .path("/listen")
+                        .queryParam("model", "nova-2")
+                        .queryParam("encoding", "mulaw")
+                        .queryParam("sample_rate", "8000")
+                        .queryParam("channels", "1")
+                        .build())
                 .bodyValue(audioBytes)
                 .retrieve()
                 .bodyToMono(String.class)

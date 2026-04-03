@@ -18,9 +18,13 @@ public class ElevenLabsServiceImpl implements ElevenLabsService {
     private final String defaultVoiceId;
 
     public ElevenLabsServiceImpl(WebClient.Builder webClientBuilder,
-                                 @Value("${elevenlabs.api.key:dummy}") String apiKey,
-                                 @Value("${elevenlabs.voice.id:default}") String defaultVoiceId) {
+                                 @Value("${voxora.api.elevenlabs.key:}") String apiKey,
+                                 @Value("${voxora.api.elevenlabs.voiceId:}") String defaultVoiceId) {
         this.defaultVoiceId = defaultVoiceId;
+
+        log.info("Initialized ElevenLabs with Voice ID {} and API Key safely loaded from .env (Starts with: {})",
+                 defaultVoiceId, apiKey != null && apiKey.length() > 4 ? apiKey.substring(0, 4) + "..." : "INVALID_KEY");
+
         this.webClient = webClientBuilder
                 .baseUrl("https://api.elevenlabs.io/v1")
                 .defaultHeader("xi-api-key", apiKey)

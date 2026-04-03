@@ -13,6 +13,8 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.util.Base64;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
@@ -22,6 +24,10 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final VoiceAiOrchestratorService voiceAiOrchestratorService;
 
+    // Stores active sessions for Speaker A and Speaker B
+    private final Map<String, WebSocketSession> activeSessions = new ConcurrentHashMap<>();
+    private final Map<String, String> streamSidsBySpeaker = new ConcurrentHashMap<>();
+
     @Autowired
     public TwilioAudioWebSocketHandler(ObjectMapper objectMapper,
                                        VoiceAiOrchestratorService voiceAiOrchestratorService) {
@@ -29,8 +35,23 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
         this.voiceAiOrchestratorService = voiceAiOrchestratorService;
     }
 
+    private String getSpeakerId(WebSocketSession session) {
+        String path = session.getUri() != null ? session.getUri().getPath() : "";
+        if (path.endsWith("/A")) {
+            return "A";
+        } else if (path.endsWith("/B")) {
+            return "B";
+        }
+        return "UNKNOWN";
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        String speakerId = getSpeakerId(session);
+        if (!"UNKNOWN".equals(speakerId)) {
+            activeSessions.put(speakerId, session);
+            log.info("WebSocket connected for Speaker {}. SessionID: {}", speakerId, session.getId());
+        }
         voiceAiOrchestratorService.onConnected(session.getId());
     }
 
@@ -72,6 +93,12 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
         JsonNode startNode = root.path("start");
         String streamSid = startNode.path("streamSid").asText(root.path("streamSid").asText(""));
         String callSid = startNode.path("callSid").asText("");
+
+        String speakerId = getSpeakerId(session);
+        if (!"UNKNOWN".equals(speakerId) && !streamSid.isBlank()) {
+            streamSidsBySpeaker.put(speakerId, streamSid);
+        }
+
         voiceAiOrchestratorService.onStart(session.getId(), streamSid, callSid);
     }
 
@@ -79,39 +106,41 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
         JsonNode mediaNode = root.path("media");
         String payload = mediaNode.path("payload").asText("");
         String streamSid = root.path("streamSid").asText("");
+        String speakerId = getSpeakerId(session);
 
         if (payload.isBlank()) {
             log.debug("Received media event without payload: sessionId={}", session.getId());
             return;
         }
 
-        log.info("Twilio media payload received. sessionId={}, streamSid={}, payloadLength={}",
-                session.getId(), streamSid, payload.length());
+        log.info("Twilio media payload received. sessionId={}, streamSid={}, speakerId={}, payloadLength={}",
+                session.getId(), streamSid, speakerId, payload.length());
 
         try {
             byte[] inboundAudioBytes = Base64.getDecoder().decode(payload);
-            log.info("[PIPELINE][RECEIVE] Decoded inbound Twilio audio bytes: sessionId={}, streamSid={}, bytes={}",
-                    session.getId(), streamSid, inboundAudioBytes.length);
+            log.info("[PIPELINE][RECEIVE] Decoded inbound Twilio audio bytes: sessionId={}, streamSid={}, speakerId={}, bytes={}",
+                    session.getId(), streamSid, speakerId, inboundAudioBytes.length);
 
-            voiceAiOrchestratorService.onMedia(session.getId(), streamSid, inboundAudioBytes)
-                    .thenAccept(aiAudioBytes -> sendAudioToTwilio(session, streamSid, aiAudioBytes))
-                    .exceptionally(e -> {
-                        log.error("[PIPELINE] Failed while processing media for Twilio response. sessionId={}, streamSid={}, error={}",
-                                session.getId(), streamSid, e.getMessage(), e);
-                        return null;
-                    });
+            // Pass execution to the orchestrator (async, no return expected)
+            voiceAiOrchestratorService.onMedia(session.getId(), streamSid, inboundAudioBytes, speakerId);
+
         } catch (Exception e) {
             log.error("Error extracting or processing media payload. sessionId={}, streamSid={}, error={}",
                     session.getId(), streamSid, e.getMessage(), e);
         }
     }
 
-    private void sendAudioToTwilio(WebSocketSession session, String streamSid, byte[] audioBytes) {
-        if (audioBytes == null || audioBytes.length == 0) {
-            log.warn("[PIPELINE][TWILIO_SEND] No AI audio generated to send back. sessionId={}, streamSid={}",
-                    session.getId(), streamSid);
+    public void sendAudioToSpeaker(String speakerId, byte[] audioBytes) {
+        if (audioBytes == null || audioBytes.length == 0 || "UNKNOWN".equals(speakerId)) {
             return;
         }
+        WebSocketSession session = activeSessions.get(speakerId);
+        if (session == null || !session.isOpen()) {
+            log.warn("[PIPELINE][TWILIO_SEND] Target session not active for speakerId={}", speakerId);
+            return;
+        }
+
+        String streamSid = streamSidsBySpeaker.getOrDefault(speakerId, "unknown");
 
         try {
             String outboundPayloadBase64 = Base64.getEncoder().encodeToString(audioBytes);
@@ -121,13 +150,15 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
                     .set("media", objectMapper.createObjectNode().put("payload", outboundPayloadBase64));
 
             String responseJson = objectMapper.writeValueAsString(response);
-            session.sendMessage(new TextMessage(responseJson));
+            synchronized (session) { // protect concurrent writes
+                session.sendMessage(new TextMessage(responseJson));
+            }
 
-            log.info("[PIPELINE][TWILIO_SEND] Sent base64 media payload to Twilio. sessionId={}, streamSid={}, bytes={}, payloadLength={}",
-                    session.getId(), streamSid, audioBytes.length, outboundPayloadBase64.length());
+            log.info("[PIPELINE][TWILIO_SEND] Sent base64 media payload to Twilio. targetSpeaker={}, streamSid={}, bytes={}, payloadLength={}",
+                    speakerId, streamSid, audioBytes.length, outboundPayloadBase64.length());
         } catch (Exception e) {
-            log.error("[PIPELINE][TWILIO_SEND] Failed to send media payload to Twilio. sessionId={}, streamSid={}, error={}",
-                    session.getId(), streamSid, e.getMessage(), e);
+            log.error("[PIPELINE][TWILIO_SEND] Failed to send media payload. targetSpeaker={}, error={}",
+                    speakerId, e.getMessage(), e);
         }
     }
 
@@ -138,6 +169,12 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        String speakerId = getSpeakerId(session);
+        if (!"UNKNOWN".equals(speakerId)) {
+            activeSessions.remove(speakerId);
+            streamSidsBySpeaker.remove(speakerId);
+            log.info("WebSocket disconnected for Speaker {}. SessionID: {}", speakerId, session.getId());
+        }
         log.info("Twilio websocket closed: sessionId={}, status={}", session.getId(), status);
     }
 }

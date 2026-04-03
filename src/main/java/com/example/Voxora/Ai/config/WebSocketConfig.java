@@ -20,7 +20,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(twilioAudioWebSocketHandler, "/api/voice/stream")
+        registry.addHandler(twilioAudioWebSocketHandler, "/api/voice/stream", "/api/voice/stream/{speakerId}")
                 .setAllowedOrigins("*");
     }
 }

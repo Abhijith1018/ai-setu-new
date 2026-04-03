@@ -1,31 +1,34 @@
 package com.example.Voxora.Ai.service.impl;
 
 import com.example.Voxora.Ai.service.DeepgramService;
-import com.example.Voxora.Ai.service.ElevenLabsService;
 import com.example.Voxora.Ai.service.GeminiLlmService;
 import com.example.Voxora.Ai.service.VoiceAiOrchestratorService;
+import com.example.Voxora.Ai.event.TranslationRequestEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayOutputStream;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 
 @Service
 public class VoiceAiOrchestratorServiceImpl implements VoiceAiOrchestratorService {
 
     private static final Logger log = LoggerFactory.getLogger(VoiceAiOrchestratorServiceImpl.class);
-    private static final String DEFAULT_SYSTEM_PROMPT = "You are Voxora voice assistant. Keep responses short and natural for phone calls.";
 
     private final DeepgramService deepgramService;
-    private final GeminiLlmService geminiLlmService;
-    private final ElevenLabsService elevenLabsService;
+    private final ApplicationEventPublisher eventPublisher;
+
+    // Buffer for speaker audio chunks
+    private final Map<String, ByteArrayOutputStream> audioBuffers = new ConcurrentHashMap<>();
 
     public VoiceAiOrchestratorServiceImpl(DeepgramService deepgramService,
-                                          GeminiLlmService geminiLlmService,
-                                          ElevenLabsService elevenLabsService) {
+                                          ApplicationEventPublisher eventPublisher) {
         this.deepgramService = deepgramService;
-        this.geminiLlmService = geminiLlmService;
-        this.elevenLabsService = elevenLabsService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -36,87 +39,69 @@ public class VoiceAiOrchestratorServiceImpl implements VoiceAiOrchestratorServic
     @Override
     public void onStart(String sessionId, String streamSid, String callSid) {
         log.info("Twilio stream started: sessionId={}, streamSid={}, callSid={}", sessionId, streamSid, callSid);
+        audioBuffers.put(sessionId, new ByteArrayOutputStream());
     }
 
     @Override
-    public CompletableFuture<byte[]> onMedia(String sessionId, String streamSid, byte[] audioBytes) {
+    public void onMedia(String sessionId, String streamSid, byte[] audioBytes, String speakerId) {
         int inboundSize = audioBytes == null ? 0 : audioBytes.length;
-        log.info("[PIPELINE][RECEIVE] Raw audio bytes received from Twilio: sessionId={}, streamSid={}, bytes={}",
-                sessionId, streamSid, inboundSize);
+        log.info("[PIPELINE][RECEIVE] Raw audio bytes received from Twilio: sessionId={}, streamSid={}, speakerId={}, bytes={}",
+                sessionId, streamSid, speakerId, inboundSize);
 
-        if (inboundSize == 0) {
-            log.warn("[PIPELINE][RECEIVE] Empty audio payload received; skipping pipeline. sessionId={}, streamSid={}",
-                    sessionId, streamSid);
-            return CompletableFuture.completedFuture(new byte[0]);
+        if (inboundSize == 0 || "UNKNOWN".equals(speakerId)) {
+            log.warn("[PIPELINE][RECEIVE] Empty audio mapping or unknown speaker; skipping pipeline. sessionId={}, streamSid={}, speakerId={}",
+                    sessionId, streamSid, speakerId);
+            return;
         }
 
-        CompletableFuture<String> sttFuture;
+        // Buffer the 160 byte chunks (8000 bytes = 1 second of mu-law audio)
+        ByteArrayOutputStream buffer = audioBuffers.computeIfAbsent(sessionId, k -> new ByteArrayOutputStream());
         try {
-            sttFuture = deepgramService.transcribeAudio(audioBytes);
+            synchronized (buffer) {
+                buffer.write(audioBytes);
+            }
         } catch (Exception e) {
-            log.error("[PIPELINE][DEEPGRAM] Failed to invoke STT call. sessionId={}, streamSid={}, error={}",
-                    sessionId, streamSid, e.getMessage(), e);
-            return CompletableFuture.completedFuture(new byte[0]);
+            log.error("Failed to write to buffer", e);
         }
 
-        return sttFuture
-                .thenCompose(transcript -> {
-                    String safeTranscript = transcript == null ? "" : transcript.trim();
-                    log.info("[PIPELINE][DEEPGRAM] STT text received: sessionId={}, streamSid={}, text='{}'",
-                            sessionId, streamSid, safeTranscript);
+        // Wait until we have 5 seconds of audio (40000 bytes)
+        if (buffer.size() >= 40000) {
+            byte[] chunkToSend;
+            synchronized (buffer) {
+                chunkToSend = buffer.toByteArray();
+                buffer.reset(); // clear buffer for the next chunk
+            }
 
-                    if (safeTranscript.isBlank()) {
-                        log.warn("[PIPELINE][DEEPGRAM] Empty transcript returned; skipping LLM/TTS. sessionId={}, streamSid={}",
-                                sessionId, streamSid);
-                        return CompletableFuture.completedFuture(null);
-                    }
+            try {
+                log.info("[PIPELINE][BUFFER] Sending {} bytes to Deepgram for speaker {}", chunkToSend.length, speakerId);
+                deepgramService.transcribeAudio(chunkToSend)
+                    .thenAccept(transcript -> {
+                        String safeTranscript = transcript == null ? "" : transcript.trim();
+                        log.info("[PIPELINE][DEEPGRAM] STT text received: sessionId={}, streamSid={}, speakerId={}, text='{}'",
+                                sessionId, streamSid, speakerId, safeTranscript);
 
-                    try {
-                        return geminiLlmService.generateTextResponse(safeTranscript, DEFAULT_SYSTEM_PROMPT);
-                    } catch (Exception e) {
-                        log.error("[PIPELINE][GEMINI] Failed to invoke LLM call. sessionId={}, streamSid={}, error={}",
-                                sessionId, streamSid, e.getMessage(), e);
-                        return CompletableFuture.completedFuture(null);
-                    }
-                })
-                .thenCompose(geminiText -> {
-                    if (geminiText == null) {
-                        return CompletableFuture.completedFuture(new byte[0]);
-                    }
-
-                    String safeGeminiText = geminiText.trim();
-                    log.info("[PIPELINE][GEMINI] LLM text received: sessionId={}, streamSid={}, text='{}'",
-                            sessionId, streamSid, safeGeminiText);
-
-                    if (safeGeminiText.isBlank()) {
-                        log.warn("[PIPELINE][GEMINI] Empty LLM response; skipping TTS. sessionId={}, streamSid={}",
-                                sessionId, streamSid);
-                        return CompletableFuture.completedFuture(new byte[0]);
-                    }
-
-                    try {
-                        return elevenLabsService.synthesizeAudio(safeGeminiText);
-                    } catch (Exception e) {
-                        log.error("[PIPELINE][ELEVENLABS] Failed to invoke TTS call. sessionId={}, streamSid={}, error={}",
-                                sessionId, streamSid, e.getMessage(), e);
-                        return CompletableFuture.completedFuture(new byte[0]);
-                    }
-                })
-                .thenApply(ttsBytes -> {
-                    int ttsSize = ttsBytes == null ? 0 : ttsBytes.length;
-                    log.info("[PIPELINE][ELEVENLABS] TTS audio bytes received: sessionId={}, streamSid={}, bytes={}",
-                            sessionId, streamSid, ttsSize);
-                    return ttsBytes == null ? new byte[0] : ttsBytes;
-                })
-                .exceptionally(e -> {
-                    log.error("[PIPELINE] Pipeline failed unexpectedly. sessionId={}, streamSid={}, error={}",
-                            sessionId, streamSid, e.getMessage(), e);
-                    return new byte[0];
-                });
+                        if (!safeTranscript.isBlank()) {
+                            String targetSpeakerId = "A".equals(speakerId) ? "B" : "A";
+                            TranslationRequestEvent event = new TranslationRequestEvent(speakerId, targetSpeakerId, safeTranscript);
+                            eventPublisher.publishEvent(event);
+                            log.info("[PIPELINE][ROUTER] Fired TranslationRequestEvent for text: {}", safeTranscript);
+                        }
+                    })
+                    .exceptionally(e -> {
+                        log.error("[PIPELINE][DEEPGRAM] STT failed. sessionId={}, streamSid={}, error={}",
+                                  sessionId, streamSid, e.getMessage(), e);
+                        return null;
+                    });
+            } catch (Exception e) {
+                log.error("[PIPELINE][DEEPGRAM] Failed to invoke STT call. sessionId={}, streamSid={}, error={}",
+                        sessionId, streamSid, e.getMessage(), e);
+            }
+        }
     }
 
     @Override
     public void onStop(String sessionId, String streamSid) {
         log.info("Twilio stream stopped: sessionId={}, streamSid={}", sessionId, streamSid);
+        audioBuffers.remove(sessionId);
     }
 }

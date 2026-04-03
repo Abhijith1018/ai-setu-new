@@ -23,7 +23,7 @@ public class GeminiLlmServiceImpl implements GeminiLlmService {
     private final String geminiApiKey;
 
     public GeminiLlmServiceImpl(WebClient.Builder webClientBuilder,
-                                @Value("${gemini.api.key:}") String geminiApiKey) {
+                                @Value("${voxora.api.gemini.key:}") String geminiApiKey) {
         this.webClient = webClientBuilder.baseUrl("https://generativelanguage.googleapis.com").build();
         this.geminiApiKey = geminiApiKey;
     }
@@ -76,4 +76,3 @@ public class GeminiLlmServiceImpl implements GeminiLlmService {
                 .toFuture();
     }
 }
-
