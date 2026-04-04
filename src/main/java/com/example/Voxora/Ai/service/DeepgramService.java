@@ -1,12 +1,33 @@
 package com.example.Voxora.Ai.service;
 
-import java.util.concurrent.CompletableFuture;
-
+/**
+ * Deepgram Speech-to-Text service using real-time streaming WebSocket.
+ * Each speaker gets a dedicated persistent WebSocket connection to Deepgram.
+ */
 public interface DeepgramService {
+
     /**
-     * Sends audio bytes to Deepgram STT and receives transcribed text asynchronously.
-     * @param audioBytes Base64 or raw mu-law audio
-     * @return CompletableFuture completing with transcribed text
+     * Opens a persistent WebSocket connection to Deepgram's streaming API for a speaker.
+     * Must be called before streamAudio().
+     *
+     * @param speakerId the speaker identifier (e.g., "A" or "B")
      */
-    CompletableFuture<String> transcribeAudio(byte[] audioBytes);
+    void openConnection(String speakerId);
+
+    /**
+     * Streams raw audio bytes to the speaker's active Deepgram WebSocket.
+     * Bytes are sent immediately with NO buffering — Deepgram handles chunking internally.
+     *
+     * @param audioBytes raw mu-law 8kHz audio bytes (typically 160 bytes from Twilio)
+     * @param speakerId  the speaker identifier (e.g., "A" or "B")
+     */
+    void streamAudio(byte[] audioBytes, String speakerId);
+
+    /**
+     * Closes the Deepgram WebSocket connection for a speaker.
+     * Should be called when the Twilio stream stops.
+     *
+     * @param speakerId the speaker identifier (e.g., "A" or "B")
+     */
+    void closeConnection(String speakerId);
 }
