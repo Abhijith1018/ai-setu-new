@@ -7,7 +7,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Thin orchestrator that routes audio directly to Deepgram's streaming WebSocket.
+ * Thin orchestrator that routes audio directly to Deepgram's streaming
+ * WebSocket.
  *
  * No buffering — every 160-byte Twilio chunk is streamed immediately.
  * Transcript handling and event publishing are done inside DeepgramServiceImpl.
@@ -43,8 +44,9 @@ public class VoiceAiOrchestratorServiceImpl implements VoiceAiOrchestratorServic
     @Override
     public void onMedia(String sessionId, String streamSid, byte[] audioBytes, String speakerId) {
         int inboundSize = audioBytes == null ? 0 : audioBytes.length;
-        log.debug("[PIPELINE][RECEIVE] Audio from Twilio: sessionId={}, streamSid={}, speaker={}, bytes={}",
-                sessionId, streamSid, speakerId, inboundSize);
+        // log.debug("[PIPELINE][RECEIVE] Audio from Twilio: sessionId={}, streamSid={},
+        // speaker={}, bytes={}",
+        // sessionId, streamSid, speakerId, inboundSize);
 
         if (inboundSize == 0 || "UNKNOWN".equals(speakerId)) {
             log.warn("[PIPELINE][RECEIVE] Empty audio or unknown speaker; skipping. sessionId={}, speaker={}",

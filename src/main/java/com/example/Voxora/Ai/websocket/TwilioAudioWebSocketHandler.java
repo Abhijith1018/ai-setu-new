@@ -30,7 +30,7 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
 
     @Autowired
     public TwilioAudioWebSocketHandler(ObjectMapper objectMapper,
-                                       VoiceAiOrchestratorService voiceAiOrchestratorService) {
+            VoiceAiOrchestratorService voiceAiOrchestratorService) {
         this.objectMapper = objectMapper;
         this.voiceAiOrchestratorService = voiceAiOrchestratorService;
     }
@@ -113,13 +113,15 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        log.info("Twilio media payload received. sessionId={}, streamSid={}, speakerId={}, payloadLength={}",
-                session.getId(), streamSid, speakerId, payload.length());
+        // log.info("Twilio media payload received. sessionId={}, streamSid={},
+        // speakerId={}, payloadLength={}",
+        // session.getId(), streamSid, speakerId, payload.length());
 
         try {
             byte[] inboundAudioBytes = Base64.getDecoder().decode(payload);
-            log.info("[PIPELINE][RECEIVE] Decoded inbound Twilio audio bytes: sessionId={}, streamSid={}, speakerId={}, bytes={}",
-                    session.getId(), streamSid, speakerId, inboundAudioBytes.length);
+            // log.info("[PIPELINE][RECEIVE] Decoded inbound Twilio audio bytes:
+            // sessionId={}, streamSid={}, speakerId={}, bytes={}",
+            // session.getId(), streamSid, speakerId, inboundAudioBytes.length);
 
             // Pass execution to the orchestrator (async, no return expected)
             voiceAiOrchestratorService.onMedia(session.getId(), streamSid, inboundAudioBytes, speakerId);
@@ -154,7 +156,8 @@ public class TwilioAudioWebSocketHandler extends TextWebSocketHandler {
                 session.sendMessage(new TextMessage(responseJson));
             }
 
-            log.info("[PIPELINE][TWILIO_SEND] Sent base64 media payload to Twilio. targetSpeaker={}, streamSid={}, bytes={}, payloadLength={}",
+            log.info(
+                    "[PIPELINE][TWILIO_SEND] Sent base64 media payload to Twilio. targetSpeaker={}, streamSid={}, bytes={}, payloadLength={}",
                     speakerId, streamSid, audioBytes.length, outboundPayloadBase64.length());
         } catch (Exception e) {
             log.error("[PIPELINE][TWILIO_SEND] Failed to send media payload. targetSpeaker={}, error={}",
