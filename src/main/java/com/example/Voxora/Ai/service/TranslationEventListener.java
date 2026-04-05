@@ -23,7 +23,8 @@ import java.util.concurrent.CompletableFuture;
  * 4. Call Groq with context-enriched prompt
  * 5. Parse Groq JSON response
  * 6. Play TRANSLATION audio to target speaker
- * 7. Play WHISPERER audio (with market price) to target speaker AFTER translation
+ * 7. Play WHISPERER audio (with market price) to target speaker AFTER
+ * translation
  * 8. If deal_confirmed → trigger LedgerLock state machine
  *
  * LEDGER LOCK FLOW (when awaiting confirmation):
@@ -46,13 +47,13 @@ public class TranslationEventListener {
     private final ObjectMapper objectMapper;
 
     public TranslationEventListener(GroqLlmService groqLlmService,
-                                    ElevenLabsService elevenLabsService,
-                                    TwilioAudioWebSocketHandler twilioAudioWebSocketHandler,
-                                    ConversationContextService conversationContextService,
-                                    LiveMarketPriceService liveMarketPriceService,
-                                    LedgerLockStateMachine ledgerLockStateMachine,
-                                    ContractMessagingService contractMessagingService,
-                                    ObjectMapper objectMapper) {
+            ElevenLabsService elevenLabsService,
+            TwilioAudioWebSocketHandler twilioAudioWebSocketHandler,
+            ConversationContextService conversationContextService,
+            LiveMarketPriceService liveMarketPriceService,
+            LedgerLockStateMachine ledgerLockStateMachine,
+            ContractMessagingService contractMessagingService,
+            ObjectMapper objectMapper) {
         this.groqLlmService = groqLlmService;
         this.elevenLabsService = elevenLabsService;
         this.twilioAudioWebSocketHandler = twilioAudioWebSocketHandler;
@@ -135,8 +136,10 @@ public class TranslationEventListener {
                 detectedCurrency = ledgerLock.path("currency").asText("INR");
                 detectedItem = ledgerLock.path("item").asText(null);
 
-                if (!priceNode.isNull()) detectedPrice = priceNode.asDouble(0);
-                if (!quantityNode.isNull()) detectedQuantity = quantityNode.asDouble(0);
+                if (!priceNode.isNull())
+                    detectedPrice = priceNode.asDouble(0);
+                if (!quantityNode.isNull())
+                    detectedQuantity = quantityNode.asDouble(0);
 
                 if (detectedPrice > 0 || detectedQuantity > 0) {
                     System.out.println("\n📒 LEDGER LOCK DETECTED:");
@@ -167,13 +170,13 @@ public class TranslationEventListener {
 
             // ─── 8. WHISPERER TTS → play AFTER translation to LISTENER ──────
             // Triggers when:
-            //   a) Groq returned ai_whisperer_advice (sentiment-related), OR
-            //   b) A commodity item + price was mentioned (market price comparison)
+            // a) Groq returned ai_whisperer_advice (sentiment-related), OR
+            // b) A commodity item + price was mentioned (market price comparison)
             boolean hasWhispererAdvice = whispererAdvice != null && !whispererAdvice.isBlank();
             boolean hasPriceDiscussion = detectedItem != null && !detectedItem.isBlank() && detectedPrice > 0;
 
             if (hasWhispererAdvice || hasPriceDiscussion) {
-                String whispererText = buildWhispererMessage(target, 
+                String whispererText = buildWhispererMessage(target,
                         hasWhispererAdvice ? whispererAdvice : "", detectedItem);
 
                 System.out.println("🤫 AI WHISPERER → Speaker " + target + " (" + targetLang + "): " + whispererText);
@@ -230,11 +233,13 @@ public class TranslationEventListener {
         if (item != null && !item.isBlank()) {
             String marketPrice = liveMarketPriceService.getMarketPrice(item);
             if (marketPrice != null) {
-                if (hasAdvice) sb.append(". "); // separator between advice and market price
+                if (hasAdvice)
+                    sb.append(". "); // separator between advice and market price
                 if (isHindi) {
                     sb.append(item).append(" का वर्तमान बाजार मूल्य ").append(marketPrice).append(" है।");
                 } else {
-                    sb.append("The current market price for ").append(item).append(" is ").append(marketPrice).append(".");
+                    sb.append("The current market price for ").append(item).append(" is ").append(marketPrice)
+                            .append(".");
                 }
             }
         }
@@ -290,20 +295,21 @@ public class TranslationEventListener {
 
     /**
      * Handles incoming transcript when LedgerLock is awaiting dual confirmation.
-     * Checks for affirmative response and triggers WhatsApp contract if both confirm.
+     * Checks for affirmative response and triggers WhatsApp contract if both
+     * confirm.
      */
     private void handleDealConfirmation(String speakerId, String targetSpeakerId, String transcript) {
         log.info("[LEDGER_LOCK] Checking confirmation from Speaker {}: '{}'", speakerId, transcript);
 
         String lower = transcript.toLowerCase().trim();
         boolean isAffirmative = lower.contains("yes") ||
-                                lower.contains("haan") ||
-                                lower.contains("haa") ||
-                                lower.contains("ha") ||
-                                transcript.contains("हाँ") ||
-                                transcript.contains("हां") ||
-                                transcript.contains("जी") ||
-                                transcript.contains("जी हाँ");
+                lower.contains("haan") ||
+                lower.contains("haa") ||
+                lower.contains("ha") ||
+                transcript.contains("हाँ") ||
+                transcript.contains("हां") ||
+                transcript.contains("जी") ||
+                transcript.contains("जी हाँ");
 
         if (!isAffirmative) {
             log.info("[LEDGER_LOCK] Speaker {} did not confirm. Transcript: '{}'", speakerId, transcript);
@@ -335,13 +341,14 @@ public class TranslationEventListener {
     }
 
     /**
-     * Plays "Deal confirmed" audio to both speakers after WhatsApp contract is sent.
+     * Plays "Deal confirmed" audio to both speakers after WhatsApp contract is
+     * sent.
      */
     private void playDealConfirmedAudio() {
         String hindiConfirm = "यह AI Setu है। बधाई हो! डील कन्फर्म हो गई है। " +
-                              "अनुबंध का विवरण आपके WhatsApp पर भेज दिया गया है।";
+                "अनुबंध का विवरण आपके WhatsApp पर भेज दिया गया है।";
         String englishConfirm = "This is AI Setu. Congratulations! The deal has been confirmed. " +
-                                "Contract details have been sent to your WhatsApp.";
+                "Contract details have been sent to your WhatsApp.";
 
         CompletableFuture<byte[]> audioAFuture = elevenLabsService.synthesizeAudio(hindiConfirm);
         CompletableFuture<byte[]> audioBFuture = elevenLabsService.synthesizeAudio(englishConfirm);
