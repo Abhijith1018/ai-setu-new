@@ -43,7 +43,8 @@ public class DeepgramServiceImpl implements DeepgramService {
             + "&channels=1"
             + "&model=nova-2"
             + "&punctuate=true"
-            + "&interim_results=true";
+            + "&interim_results=true"
+            + "&endpointing=300";  // 300ms pause triggers speech_final
 
     private final String apiKey;
     private final ObjectMapper objectMapper;
@@ -159,12 +160,21 @@ public class DeepgramServiceImpl implements DeepgramService {
 
     /**
      * Listener for a single speaker's Deepgram WebSocket.
-     * Publishes TranslationRequestEvent on final transcripts.
+     *
+     * Uses a "Buffer and Flush" strategy:
+     * - Accumulates is_final transcript patches into a sentenceBuffer
+     * - Only fires TranslationRequestEvent when:
+     *   a) Buffer ends with sentence-ending punctuation (.?!।), OR
+     *   b) Deepgram signals speech_final=true (speaker paused / endpointing)
+     * - Interim results are ignored for the translation pipeline
      */
     private class DeepgramWebSocketListener implements WebSocket.Listener {
 
         private final String speakerId;
-        private final StringBuilder messageBuffer = new StringBuilder();
+        /** Buffer for reassembling fragmented WebSocket text frames */
+        private final StringBuilder wsFrameBuffer = new StringBuilder();
+        /** Buffer for accumulating complete sentence from multiple is_final patches */
+        private final StringBuilder sentenceBuffer = new StringBuilder();
 
         DeepgramWebSocketListener(String speakerId) {
             this.speakerId = speakerId;
@@ -179,11 +189,11 @@ public class DeepgramServiceImpl implements DeepgramService {
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-            messageBuffer.append(data);
+            wsFrameBuffer.append(data);
 
             if (last) {
-                String fullMessage = messageBuffer.toString();
-                messageBuffer.setLength(0);
+                String fullMessage = wsFrameBuffer.toString();
+                wsFrameBuffer.setLength(0);
                 processDeepgramMessage(fullMessage);
             }
 
@@ -195,6 +205,8 @@ public class DeepgramServiceImpl implements DeepgramService {
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
             log.info("[DEEPGRAM][WS] Connection closed for speaker {}. Status: {}, Reason: {}",
                     speakerId, statusCode, reason);
+            // Flush any remaining buffered text before closing
+            flushBuffer();
             activeConnections.remove(speakerId);
             return null;
         }
@@ -202,20 +214,18 @@ public class DeepgramServiceImpl implements DeepgramService {
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
             log.error("[DEEPGRAM][WS] Error on WebSocket for speaker {}", speakerId, error);
+            flushBuffer();
             activeConnections.remove(speakerId);
         }
 
         /**
-         * Parse Deepgram's streaming JSON response and fire event on final transcripts.
+         * Parse Deepgram's streaming JSON response.
          *
-         * Deepgram response format:
-         * {
-         *   "type": "Results",
-         *   "is_final": true,
-         *   "channel": {
-         *     "alternatives": [{ "transcript": "hello world", "confidence": 0.98 }]
-         *   }
-         * }
+         * Buffer & Flush strategy:
+         * 1. Ignore interim results (is_final=false)
+         * 2. Append is_final patches to sentenceBuffer
+         * 3. Check for sentence-ending punctuation (.?!।) → flush
+         * 4. Check for speech_final=true (endpointing pause) → flush
          */
         private void processDeepgramMessage(String message) {
             try {
@@ -228,6 +238,7 @@ public class DeepgramServiceImpl implements DeepgramService {
                 }
 
                 boolean isFinal = root.path("is_final").asBoolean(false);
+                boolean speechFinal = root.path("speech_final").asBoolean(false);
                 String transcript = root.path("channel")
                         .path("alternatives")
                         .path(0)
@@ -235,39 +246,86 @@ public class DeepgramServiceImpl implements DeepgramService {
                         .asText("")
                         .trim();
 
-                if (transcript.isBlank()) {
-                    return;
-                }
-
+                // ── Step 1: Ignore interim results ───────────────────────────────
                 if (!isFinal) {
-                    log.debug("[DEEPGRAM][INTERIM] Speaker {} ({}): '{}'",
-                            speakerId, getLanguageForSpeaker(speakerId), transcript);
+                    if (!transcript.isBlank()) {
+                        log.debug("[DEEPGRAM][INTERIM] Speaker {} ({}): '{}'",
+                                speakerId, getLanguageForSpeaker(speakerId), transcript);
+                    }
                     return;
                 }
 
-                // ── FINAL TRANSCRIPT ─────────────────────────────────────────────
-                log.info("[DEEPGRAM][FINAL] Speaker {} ({}): '{}'",
-                        speakerId, getLanguageForSpeaker(speakerId), transcript);
+                // ── Step 2: Append is_final patch to sentence buffer ─────────────
+                if (!transcript.isBlank()) {
+                    if (sentenceBuffer.length() > 0) {
+                        sentenceBuffer.append(" "); // space between patches
+                    }
+                    sentenceBuffer.append(transcript);
 
-                // Route to the OTHER speaker (A→B, B→A)
-                String targetSpeakerId = "A".equals(speakerId) ? "B" : "A";
+                    log.info("[DEEPGRAM][PATCH] Speaker {} ({}): patch='{}', buffer='{}'",
+                            speakerId, getLanguageForSpeaker(speakerId),
+                            transcript, sentenceBuffer);
+                }
 
-                TranslationRequestEvent event = new TranslationRequestEvent(
-                        speakerId,
-                        targetSpeakerId,
-                        transcript
-                );
-                eventPublisher.publishEvent(event);
+                // ── Step 3: Check for flush conditions ───────────────────────────
+                boolean shouldFlush = false;
+                String bufferText = sentenceBuffer.toString().trim();
 
-                log.info("[PIPELINE][ROUTER] Fired TranslationRequestEvent: Source={} ({}), Target={} ({}), Text='{}'",
-                        speakerId, getLanguageForSpeaker(speakerId),
-                        targetSpeakerId, getLanguageForSpeaker(targetSpeakerId),
-                        transcript);
+                if (!bufferText.isEmpty()) {
+                    char lastChar = bufferText.charAt(bufferText.length() - 1);
+
+                    // Flush on sentence-ending punctuation
+                    if (lastChar == '.' || lastChar == '?' || lastChar == '!' || lastChar == '।') {
+                        log.info("[DEEPGRAM][FLUSH] Punctuation detected ('{}') for speaker {}", lastChar, speakerId);
+                        shouldFlush = true;
+                    }
+
+                    // Flush on speech_final (Deepgram endpointing — speaker paused)
+                    if (speechFinal) {
+                        log.info("[DEEPGRAM][FLUSH] speech_final=true (endpointing) for speaker {}", speakerId);
+                        shouldFlush = true;
+                    }
+                }
+
+                if (shouldFlush) {
+                    flushBuffer();
+                }
 
             } catch (Exception e) {
                 log.error("[DEEPGRAM][WS] Failed to parse message for speaker {}: {}",
                         speakerId, e.getMessage(), e);
             }
+        }
+
+        /**
+         * Flushes the sentence buffer: fires a TranslationRequestEvent with
+         * the accumulated text and clears the buffer.
+         */
+        private void flushBuffer() {
+            String completeText = sentenceBuffer.toString().trim();
+            sentenceBuffer.setLength(0);
+
+            if (completeText.isBlank()) {
+                return;
+            }
+
+            log.info("[DEEPGRAM][FLUSH] ✅ Complete sentence for Speaker {} ({}): '{}'",
+                    speakerId, getLanguageForSpeaker(speakerId), completeText);
+
+            // Route to the OTHER speaker (A→B, B→A)
+            String targetSpeakerId = "A".equals(speakerId) ? "B" : "A";
+
+            TranslationRequestEvent event = new TranslationRequestEvent(
+                    speakerId,
+                    targetSpeakerId,
+                    completeText
+            );
+            eventPublisher.publishEvent(event);
+
+            log.info("[PIPELINE][ROUTER] Fired TranslationRequestEvent: Source={} ({}), Target={} ({}), Text='{}'",
+                    speakerId, getLanguageForSpeaker(speakerId),
+                    targetSpeakerId, getLanguageForSpeaker(targetSpeakerId),
+                    completeText);
         }
     }
 }
