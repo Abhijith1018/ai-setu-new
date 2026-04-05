@@ -166,8 +166,15 @@ public class TranslationEventListener {
             }
 
             // ─── 8. WHISPERER TTS → play AFTER translation to LISTENER ──────
-            if (whispererAdvice != null && !whispererAdvice.isBlank()) {
-                String whispererText = buildWhispererMessage(target, whispererAdvice, detectedItem);
+            // Triggers when:
+            //   a) Groq returned ai_whisperer_advice (sentiment-related), OR
+            //   b) A commodity item + price was mentioned (market price comparison)
+            boolean hasWhispererAdvice = whispererAdvice != null && !whispererAdvice.isBlank();
+            boolean hasPriceDiscussion = detectedItem != null && !detectedItem.isBlank() && detectedPrice > 0;
+
+            if (hasWhispererAdvice || hasPriceDiscussion) {
+                String whispererText = buildWhispererMessage(target, 
+                        hasWhispererAdvice ? whispererAdvice : "", detectedItem);
 
                 System.out.println("🤫 AI WHISPERER → Speaker " + target + " (" + targetLang + "): " + whispererText);
 
@@ -208,24 +215,26 @@ public class TranslationEventListener {
      */
     private String buildWhispererMessage(String targetSpeakerId, String advice, String item) {
         StringBuilder sb = new StringBuilder();
+        boolean isHindi = "A".equals(targetSpeakerId);
+        boolean hasAdvice = advice != null && !advice.isBlank();
 
         // Prefix in listener's language
-        if ("A".equals(targetSpeakerId)) {
-            // Listener is Speaker A (Hindi)
-            sb.append("यह AI Setu है। ").append(advice);
-        } else {
-            // Listener is Speaker B (English)
-            sb.append("This is AI Setu. ").append(advice);
+        sb.append(isHindi ? "यह AI Setu है। " : "This is AI Setu. ");
+
+        // Append whisperer advice if present
+        if (hasAdvice) {
+            sb.append(advice);
         }
 
         // Append market price if commodity detected
         if (item != null && !item.isBlank()) {
             String marketPrice = liveMarketPriceService.getMarketPrice(item);
             if (marketPrice != null) {
-                if ("A".equals(targetSpeakerId)) {
-                    sb.append(". ").append(item).append(" का वर्तमान बाजार मूल्य ").append(marketPrice).append(" है।");
+                if (hasAdvice) sb.append(". "); // separator between advice and market price
+                if (isHindi) {
+                    sb.append(item).append(" का वर्तमान बाजार मूल्य ").append(marketPrice).append(" है।");
                 } else {
-                    sb.append(". The current market price for ").append(item).append(" is ").append(marketPrice).append(".");
+                    sb.append("The current market price for ").append(item).append(" is ").append(marketPrice).append(".");
                 }
             }
         }

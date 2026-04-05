@@ -18,21 +18,21 @@ public class LiveMarketPriceServiceImpl implements LiveMarketPriceService {
     private static final Logger log = LoggerFactory.getLogger(LiveMarketPriceServiceImpl.class);
 
     private static final Map<String, String> MARKET_PRICES = new ConcurrentHashMap<>(Map.of(
-            "wheat",   "₹2,800 per quintal",
-            "rice",    "₹3,200 per quintal",
-            "cotton",  "₹7,500 per quintal",
-            "soybean", "₹4,600 per quintal",
-            "maize",   "₹2,200 per quintal",
-            "sugar",   "₹3,600 per quintal",
-            "mustard", "₹5,400 per quintal",
-            "chana",   "₹5,200 per quintal",
-            "bajra",   "₹2,500 per quintal",
-            "jowar",   "₹3,100 per quintal"
-    ));
+            "wheat", "₹28 per kg",
+            "rice", "₹32 per kg",
+            "cotton", "₹75 per kg",
+            "soybean", "₹46 per kg",
+            "maize", "₹22 per kg",
+            "sugar", "₹36 per kg",
+            "mustard", "₹54 per kg",
+            "chana", "₹52 per kg",
+            "bajra", "₹25 per kg",
+            "jowar", "₹31 per kg"));
 
     @Override
     public String getMarketPrice(String commodity) {
-        if (commodity == null || commodity.isBlank()) return null;
+        if (commodity == null || commodity.isBlank())
+            return null;
 
         String normalized = commodity.toLowerCase().trim();
         String price = MARKET_PRICES.get(normalized);
