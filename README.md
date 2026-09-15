@@ -1,77 +1,124 @@
-# Voxora AI — Backend (Spring Boot)
+# AI-Setu
 
-Short summary
+**Real-time Hindi–English voice bridge for rural commerce.**
 
-- Purpose: Core Spring Boot backend for Voxora AI — a multi-tenant Voice OS for Indian businesses.
-- Tech: Java 21, Spring Boot 3.2+, Spring Web/WebSockets, Spring Data JPA (MySQL), Redis, Twilio, Deepgram, Anthropic Claude, ElevenLabs, Razorpay.
+Two people who don't share a language talk on a normal phone call. AI-Setu sits in the middle — translating in real time, watching the conversation for manipulation or pressure tactics, and locking in deal terms before either side can walk it back.
 
-Quick start (Windows PowerShell)
+🏆 **Grand Finalist, Top 6 in India** — AI for Bharat Hackathon (powered by AWS), selected from 95,000+ submissions.
 
-Prerequisites
+---
 
-- Java 21 (SDK) installed and `JAVA_HOME` set.
-- Git (optional)
-- Internet access for external APIs and Maven dependencies.
+## What it does
 
-Build & run (development)
+- A caller speaks in Hindi, the other side hears it in English (and vice versa) — near real time, over a standard PSTN phone call, no app required.
+- While the call happens, an AI layer watches for **sentiment shifts and manipulation patterns**, extracts what's actually being agreed to, and requires **dual confirmation** before anything is treated as a locked deal.
+- Built for the kind of transaction where one side is fluent in the deal and the other isn't — and where trust, not just translation, is the actual product.
 
-Open PowerShell in the project root (where `mvnw.cmd` lives) and run:
+## Architecture
 
-```powershell
-# build
-.\mvnw.cmd -DskipTests clean package
+![AI-Setu architecture diagram]
+<img width="1127" height="592" alt="image" src="https://github.com/user-attachments/assets/5b2d6e95-e187-4799-a77f-9b6179b5d7a3" />
 
-# run
-.\mvnw.cmd spring-boot:run
+
+**Call flow, end to end:**
+
+1. **Call participants** — Speaker A and Speaker B connect over a standard PSTN voice call, one on each side of the language gap.
+2. **Twilio Media Streams** — a bidirectional WebSocket (WSS) carries base64-encoded μ-law audio (8 kHz, mono, ~20ms frames) between the call and the backend.
+3. **Spring Boot orchestrator** (Java 21, Spring Boot 3.2, modular monolith) — handles the WebSocket connection, decodes/encodes audio, tracks call SID + stream SID, and coordinates the pipeline via Spring async events.
+4. **Speech + AI pipeline:**
+   - **Deepgram Nova-2** — streaming STT, Hindi/English, 300ms endpointing
+   - **Redis** — holds the last 5 conversation turns as rolling context
+   - **Groq (Llama 3.3 70B)** — reasoning over the transcript, non-streaming JSON output, temperature 0.3
+   - **ElevenLabs Multilingual v2** — full-response TTS, μ-law 8kHz output routed back into the call
+
+**Trust layer, running alongside the pipeline:**
+
+| Feature | What it does |
+|---|---|
+| Translation | Real-time language conversion between speakers |
+| Sentiment / manipulation flag | Detects pressure tactics or emotional manipulation mid-call |
+| Listener advice | Surfaces guidance to the disadvantaged party in real time |
+| Deal extraction | Pulls structured terms out of unstructured conversation |
+| Ledger lock | In-memory dual confirmation before terms count as agreed |
+| WhatsApp sandbox | Sends a contract message summarizing what was agreed |
+
+## Tech stack
+
+- **Backend:** Java 21, Spring Boot 3.2, WebSockets
+- **Telephony:** Twilio Media Streams
+- **STT:** Deepgram Nova-2 (streaming)
+- **LLM:** Groq — Llama 3.3 70B
+- **TTS:** ElevenLabs Multilingual v2
+- **State:** Redis (rolling conversation context)
+- **Messaging:** WhatsApp (Twilio sandbox)
+- **Payments (sandboxed):** Razorpay
+
+## Honest current limitations
+
+This is a working prototype, not a finished product. Being upfront about where it stands:
+
+- Fixed A/B language routing (not yet dynamic per speaker)
+- Global speaker-scoped state (not yet isolated per call at scale)
+- LLM + TTS are currently **buffered, not streaming** — a deliberate tradeoff to ship a reliable working system first
+- No barge-in / mark / clear support yet (a speaker can't interrupt mid-response)
+- **No verified end-to-end latency benchmark yet** — the pipeline is designed for low latency (300ms STT endpointing) but the full round-trip hasn't been formally measured
+
+Converting this into a properly benchmarked, low-latency streaming pipeline with barge-in support is the next milestone.
+
+## Getting started
+
+### Prerequisites
+
+- Java 21
+- MySQL
+- A Redis instance (e.g. Upstash)
+- API keys for Twilio, Deepgram, Groq, and ElevenLabs
+
+### Environment variables
+
+Create a `.env` (or `application.properties`) with your own credentials — **never commit real keys to the repo**:
+
+```env
+DB_URL=jdbc:mysql://localhost:3306/your_db?serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true
+DB_USERNAME=your_db_username
+DB_PASSWORD=your_db_password
+
+REDIS_HOST=your_redis_host
+REDIS_PORT=6379
+REDIS_PASSWORD=your_redis_password
+
+DEEPGRAM_API_KEY=your_deepgram_api_key
+GROQ_API_KEY=your_groq_api_key
+ELEVENLABS_API_KEY=your_elevenlabs_api_key
+ELEVENLABS_VOICE_ID=your_elevenlabs_voice_id
+
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+
+RAZORPAY_KEY_ID=your_razorpay_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 ```
 
-Run tests
+### Run
 
-```powershell
-.\mvnw.cmd test
+```bash
+./mvnw spring-boot:run
 ```
 
-Project layout (important files)
+Point a Twilio phone number's voice webhook at `POST /api/voice/incoming` to start routing calls through the pipeline.
 
-- `pom.xml` — Maven build.
-- `mvnw` / `mvnw.cmd` — Maven wrapper.
-- `src/main/java/.../VoxoraAiApplication.java` — Spring Boot application.
-- `src/main/resources/application.properties` — app configuration.
-- `Voxora architecture` — project architecture and implementation roadmap (Telephony handshake, WebSocket audio pipeline, AI orchestration, payments, HITL dashboard).
+## Roadmap
 
-Key endpoints (to implement / expected)
+- [ ] Streaming LLM + TTS (replace buffered response with token-level streaming)
+- [ ] Verified end-to-end latency benchmark
+- [ ] Barge-in / interrupt support
+- [ ] Per-call state isolation (move off global speaker-scoped state)
+- [ ] Dynamic language detection instead of fixed A/B routing
 
-- POST `/api/voice/incoming` — Twilio webhook that returns TwiML instructing Twilio to open a WebSocket to `/api/voice/stream`.
-- WebSocket `/api/voice/stream` — Twilio audio stream handler (handle `Connected`, `Start`, `Media`, `Stop` payloads; decode base64 mu-law audio).
-- WebSocket `/ws/dashboard` — Dashboard/HITL websocket for real-time transcripts and escalation alerts.
+## Results
 
-Entities & DB notes
+🏆 Grand Finalist, Top 6 in India — AI for Bharat Hackathon powered by AWS (95,000+ submissions)
 
-See `Voxora architecture` for the multi-tenant entities. Important DB details:
-- MySQL is used; map JSON fields with `@Column(columnDefinition = "JSON")`.
-- Entities: Organization, TwilioNumber, AiConfig (with JSON knowledge_base), CallLog.
+---
 
-Coding standards / operational notes
-
-- Use `@Transactional` for DB writes (especially payment flow).
-- Tag logs with `TwilioCallSid` for tracing. Use SLF4J.
-- Graceful degradation: if Deepgram/ElevenLabs fail, return a TwiML fallback message explaining technical difficulties.
-- Prefer Java Virtual Threads (Project Loom) for high-concurrency paths.
-
-Next steps (where to start)
-
-1. Implement `TwilioWebhookController` (`/api/voice/incoming`) per architecture doc.
-2. Implement `TwilioAudioWebSocketHandler` to accept Twilio's WebSocket audio stream and forward to AI pipeline.
-3. Implement `VoiceAiOrchestratorService` to integrate Deepgram (STT), Anthropic (LLM), ElevenLabs (TTS).
-4. Add `PaymentAndNotificationService` to create Razorpay UPI links and send receipts via WhatsApp Business API.
-5. Add unit/integration tests for each module and a minimal end-to-end smoke test.
-
-Where to find architecture notes
-
-Open the file at the repo root named `Voxora architecture` for a detailed step-by-step architecture and requirements.
-
-Contact / ownership
-
-This README is generated as a concise starter. If you'd like a more detailed developer README, module-by-module setup, or CI suggestions, tell me which area to expand.
-
-
+*Built solo — architecture, pipeline, and trust layer.*
